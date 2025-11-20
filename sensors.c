@@ -639,8 +639,8 @@ int main()
 	
 		ambientLight = getUVdata(0x0d);
 		lux = ambient2Lux(ambientLight);
-	
-		sprintf((char*)buffer, "RAW Ambient Light: %ld		%.2f lux\r\n", ambientLight, lux);
+
+		sprintf((char*)buffer, "Ambient Light: %.2f lux\r\n", lux);
 		uartSend(buffer);
 	
 		//LTR390 config
@@ -650,8 +650,8 @@ int main()
 		// get UV level
 		rawUV = getUVdata(0x10);
 		uvi = calcUVI(rawUV);
-	
-		sprintf((char*)buffer, "RAW UV: %ld		UV index: %ld \r", rawUV, uvi);
+		
+		sprintf((char*)buffer, "UV index: %ld \r\n\r\n\r\n", uvi);
 		uartSend(buffer);
 		
 		// flash the amber LED(L)
