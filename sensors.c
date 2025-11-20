@@ -25,10 +25,15 @@ static int32_t compensateTemp(int32_t adcTemp);
 static double compensatePressure(int32_t adcPressure);
 static double compensateHumidity(int32_t adcPressure);
 
+double ambient2Lux(uint32_t rawAmbient);
+uint8_t calcUVI(uint32_t rawUV);
+
 
 void uartSend(uint8_t []);
 
-void getData(uint8_t addr);
+void getTPHdata(uint8_t addr);
+uint32_t getUVdata(uint8_t addr);
+
 void getCompParameters(uint8_t addr);
 
 
@@ -286,6 +291,30 @@ static int32_t compensateTemp(int32_t adcTemp) {
 	return T; 	
 }
 
+double ambient2Lux(uint32_t rawAmbient) {
+	
+	double lux;
+	uint8_t gain = 3;
+	double resInt = 1;
+	uint8_t Wfac = 1;	//1 for no or clear window, > for tinted window1 
+	
+	lux = ( (0.6 * rawAmbient) / (gain * resInt) ) * Wfac;
+	
+	return lux;
+}
+
+uint8_t calcUVI(uint32_t rawUV) {
+	
+	uint16_t UVsensitivity = 2300;
+	uint16_t uvi;
+	uint16_t Wfac = 1;
+	
+	uvi = (rawUV / UVsensitivity) * Wfac;
+	
+	return uvi;
+	
+}
+
 
 
 void i2c_init(void) {
@@ -326,12 +355,13 @@ uint8_t i2c_write_byte(uint8_t slave_address, uint8_t regAddr, uint8_t data) {
     TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO);
     return 0; // Success
 	
-	_delay_ms(1);
+	_delay_ms(10);
 }
 
 uint8_t i2c_read_byte(uint8_t slave_address, uint8_t regAddr) {
 	
 	uint8_t data;
+	
     // Send START condition (similar to write)
 //    TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN) | (1 << TWEA);
 	TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN);
@@ -379,7 +409,25 @@ uint8_t i2c_read_byte(uint8_t slave_address, uint8_t regAddr) {
     return data; // Success
 }
 
-void getData(uint8_t addr) {
+uint32_t getUVdata(uint8_t addr) {
+
+	uint32_t data, readData;
+
+	readData = i2c_read_byte(UVADDR, addr+2);
+	data = readData << 12;
+
+	readData = i2c_read_byte(UVADDR, addr+1);
+	data |= readData << 8;
+
+		
+	readData = i2c_read_byte(UVADDR, addr);
+	data |= readData;
+	
+	return data;
+	
+}
+
+void getTPHdata(uint8_t addr) {
 	
 	int32_t data, readData;
 
@@ -446,9 +494,13 @@ int main()
     uint8_t rslt, chipID;
     int32_t period;
 	int32_t temperature;
+	uint32_t ambientLight, rawUV, uvi;
+	
+	
 	double pressure; 
 	double  humidity;
 	double inPressure;
+	double lux;
     
     cli();
     DDRB |= (1 << PB5);
@@ -464,88 +516,145 @@ int main()
     UBRR0H = 0x00; 
     UBRR0L = (uint8_t)103;
 
-	
+	// Get the compensation parameters fm the BME280
 	getCompParameters(0x88);
 	
-
-        chipID = i2c_read_byte(BMPADDR, 0xd0);
-        _delay_ms(100);
-		
-        sprintf((char*)buffer, "H1 %d\r\n", calData.dig_h1);
-        uartSend(buffer);
-		
-        sprintf((char*)buffer, "H2: %d\r\n", calData.dig_h2);
-        uartSend(buffer);
-		
-        sprintf((char*)buffer, "H3: %d\r\n", calData.dig_h3);
-        uartSend(buffer);
-		
-        sprintf((char*)buffer, "H4: %d\r\n", calData.dig_h4);
-        uartSend(buffer);
-		
-        sprintf((char*)buffer, "H5: %d\r\n", calData.dig_h5);
-        uartSend(buffer);
-		
-        sprintf((char*)buffer, "H6: %d\r\n", calData.dig_h6);
-        uartSend(buffer);
+    chipID = i2c_read_byte(BMPADDR, 0xd0);
         
-        sprintf((char*)buffer, "BME280 Chip ID: %x\r\n", chipID);
-        uartSend(buffer);
+	sprintf((char*)buffer, "BME280 Chip ID: %x\r\n", chipID);
+    uartSend(buffer);
 		
-		_delay_ms(10);
-		i2c_write_byte(BMPADDR, 0xf2, 0x04);
-		_delay_ms(10);
-		rslt = i2c_read_byte(BMPADDR, 0xf2);
-		sprintf((char*)buffer, "Register 0xF2: %x\r\n", rslt);
-		uartSend(buffer);
-		
-		
-		i2c_write_byte(BMPADDR, 0xf4, 0x91);
-		_delay_ms(10);
-		rslt = i2c_read_byte(BMPADDR, 0xf4);
-		sprintf((char*)buffer, "Register 0xF4: %x\r\n", rslt);
-		uartSend(buffer);
-		
-		_delay_ms(10);
-		i2c_write_byte(BMPADDR, 0xf5, 0x40);
-		_delay_ms(10);
-		rslt = i2c_read_byte(BMPADDR, 0xf5);
-		sprintf((char*)buffer, "Register 0xF5: %x\r\n", rslt);
-		uartSend(buffer);
-		
-		_delay_ms(100);
+    chipID = i2c_read_byte(UVADDR, 0x06);
+        
+    sprintf((char*)buffer, "LTR390Chip ID: %x\r\n\r\n", chipID);
+    uartSend(buffer);
 
-		getData(0xf7);
+	// BME280 configuration
 		
-		sprintf((char*)buffer, "RAW Temperature: %ld\r\n", myData.temperature);
-		uartSend(buffer);
-		
-
-		temperature = compensateTemp(myData.temperature);
-		sprintf((char*)buffer, "Temperature: %ld\r\n", temperature);
-		uartSend(buffer);
+	// Oversampling of humidity data: x8
+	i2c_write_byte(BMPADDR, 0xf2, 0x04);
+	_delay_ms(10);
 	
-		sprintf((char*)buffer, "RAW pressure: %ld\r\n", myData.pressure);
-		uartSend(buffer);
+	// ctrl_meas: oversampling x8 for T and P, forced mode		
+	i2c_write_byte(BMPADDR, 0xf4, 0x91);
+	_delay_ms(10);
+	
+	//config
+	i2c_write_byte(BMPADDR, 0xf5, 0x40);
+	_delay_ms(10);
 		
-
-		pressure = compensatePressure(myData.pressure);
+	//LTR390 config
+	i2c_write_byte(UVADDR, 0x00, 0x02); //MAIN_CTL reg: ALS mode	
+	_delay_ms(10);
 		
-		inPressure = ( (double)pressure) * 0.0002953;
+	i2c_write_byte(UVADDR, 0x04, 0x22); //ALS_UVS_MEAS_RATE
+	_delay_ms(10);	
 		
-		sprintf((char*)buffer, "Pressure: %.2f\r\n", inPressure );
-		uartSend(buffer);
+	i2c_write_byte(UVADDR, 0x05, 0x01); //ALS_UVS_GAIN
+	_delay_ms(10);
+			
+	getTPHdata(0xf7);
 		
-		sprintf((char*)buffer, "RAW humidity: %ld\r\n", myData.humidity);
-		uartSend(buffer);
+	sprintf((char*)buffer, "RAW Temperature: %ld\r\n", myData.temperature);
+	uartSend(buffer);
 		
-		humidity = compensateHumidity(myData.humidity);
-		sprintf((char*)buffer, "Humidity: %.2f\r\n", humidity);
-		uartSend(buffer);
+	temperature = compensateTemp(myData.temperature);
+	sprintf((char*)buffer, "Temperature: %ld\r\n", temperature);
+	uartSend(buffer);
+	
+	sprintf((char*)buffer, "RAW pressure: %ld\r\n", myData.pressure);
+	uartSend(buffer);
+		
+	pressure = compensatePressure(myData.pressure);
+		
+	inPressure = ( (double)pressure) * 0.0002953;
+		
+	sprintf((char*)buffer, "Pressure: %.2f\r\n", inPressure );
+	uartSend(buffer);
+		
+	sprintf((char*)buffer, "RAW humidity: %ld\r\n", myData.humidity);
+	uartSend(buffer);
+		
+	humidity = compensateHumidity(myData.humidity);
+	sprintf((char*)buffer, "Humidity: %.2f\r\n\r\n\r\n", humidity);
+	uartSend(buffer);
+		
+	// Get Ambient light
+	ambientLight = getUVdata(0x0d);
+	lux = ambient2Lux(ambientLight);
+		
+	sprintf((char*)buffer, "RAW Ambient Light: %ld		%.2f lux\r\n", ambientLight, lux);
+	uartSend(buffer);
+		
+	//LTR390 config
+	i2c_write_byte(UVADDR, 0x00, 0x0a); //MAIN_CTL reg: UV mode
+	_delay_ms(10);
+			
+	// get UV level
+	rawUV = getUVdata(0x10);
+	uvi = calcUVI(rawUV);
+		
+	sprintf((char*)buffer, "RAW UV: %ld		UV index: %ld \r\n", rawUV, uvi);
+	uartSend(buffer);
+		
 
     while (1)
     {
-		       // flash the amber LED(L)
+
+		// Force a measurement from the BMP280
+		i2c_write_byte(BMPADDR, 0xf4, 0x91);
+		_delay_ms(10);
+		
+		getTPHdata(0xf7);
+
+//		sprintf((char*)buffer, "RAW Temperature: %ld\r\n", myData.temperature);
+//		uartSend(buffer);
+
+		temperature = compensateTemp(myData.temperature);
+		sprintf((char*)buffer, "Temperature: %.2f deg.C\r\n", (float)(temperature/100.00));
+		uartSend(buffer);
+
+//		sprintf((char*)buffer, "RAW pressure: %ld\r\n", myData.pressure);
+//		uartSend(buffer);
+
+		pressure = compensatePressure(myData.pressure);
+		inPressure = ( (double)pressure) * 0.0002953;
+
+		sprintf((char*)buffer, "Pressure: %.2f inHg\r\n", inPressure );
+		uartSend(buffer);
+
+//		sprintf((char*)buffer, "RAW humidity: %ld\r\n", myData.humidity);
+//		uartSend(buffer);
+
+		humidity = compensateHumidity(myData.humidity);
+		sprintf((char*)buffer, "Humidity: %.2f %%\r\n\r\n", humidity);
+		uartSend(buffer);
+		
+		i2c_write_byte(UVADDR, 0x00, 0x02); //MAIN_CTL reg: ALS mode
+		_delay_ms(10);
+		
+		// Get Ambient light
+		i2c_write_byte(UVADDR, 0x00, 0x02); //MAIN_CTL reg: ALS mode
+		_delay_ms(100);	
+	
+		ambientLight = getUVdata(0x0d);
+		lux = ambient2Lux(ambientLight);
+	
+		sprintf((char*)buffer, "RAW Ambient Light: %ld		%.2f lux\r\n", ambientLight, lux);
+		uartSend(buffer);
+	
+		//LTR390 config
+		i2c_write_byte(UVADDR, 0x00, 0x0a); //MAIN_CTL reg: UV mode
+		_delay_ms(100);
+	
+		// get UV level
+		rawUV = getUVdata(0x10);
+		uvi = calcUVI(rawUV);
+	
+		sprintf((char*)buffer, "RAW UV: %ld		UV index: %ld \r", rawUV, uvi);
+		uartSend(buffer);
+		
+		// flash the amber LED(L)
         PORTB ^= (1 << PB5);
         _delay_ms(1000);
     }
