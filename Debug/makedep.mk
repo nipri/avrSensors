@@ -4,5 +4,7 @@
 
 bme280.c
 
+HD44780_AVR.c
+
 sensors.c
 

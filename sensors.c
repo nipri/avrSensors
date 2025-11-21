@@ -1,5 +1,5 @@
 // Default clock source is internal 8MHz RC oscillator
-#define F_CPU 16000000UL
+//#define F_CPU 16000000UL
 #define SCL_CLOCK 100000UL // I2C clock frequency (100kHz)
 
 #define UVADDR    0x53
@@ -13,10 +13,21 @@
 #include <string.h>
 #include "bme280.h"
 #include "bme280_defs.h"
+#include "HD44780_AVR.h"
 
 uint8_t buffer[128];
 static struct bme280_uncomp_data myData;
 static struct bme280_calib_data calData;
+
+uint8_t string1[] = "HELLO!";
+uint8_t displayCount, timerCount;
+
+int32_t temperature;
+uint32_t ambientLight, rawUV, uvi;	
+double pressure;
+double  humidity;
+double inPressure;
+double lux;
 
 void i2c_init(void);
 uint8_t i2c_write_byte(uint8_t slaveAddr, uint8_t regAddr, uint8_t data);
@@ -24,6 +35,11 @@ uint8_t i2c_read_byte(uint8_t slaveAddr, uint8_t regAddr);
 static int32_t compensateTemp(int32_t adcTemp);
 static double compensatePressure(int32_t adcPressure);
 static double compensateHumidity(int32_t adcPressure);
+
+void updateLCD(uint8_t displayCount);
+
+extern void HD44780_WriteData(uint8_t row, uint8_t col, char* data, uint8_t clearDisplay);
+extern void HD44780_Init(void);
 
 double ambient2Lux(uint32_t rawAmbient);
 uint8_t calcUVI(uint32_t rawUV);
@@ -315,8 +331,6 @@ uint8_t calcUVI(uint32_t rawUV) {
 	
 }
 
-
-
 void i2c_init(void) {
     
     // Set SCL frequency
@@ -488,22 +502,69 @@ void uartSend(uint8_t character[]) {
 
 }
 
+void updateLCD(uint8_t displayCount) {
+	
+	switch(displayCount) {
+		
+		case 0:
+			sprintf((char*)buffer, "Temperature");
+			HD44780_WriteData(0, 0, (char*)buffer, 1);
+				
+			sprintf((char*)buffer, "%.2f deg.C", (float)(temperature/100.00));
+			HD44780_WriteData(1, 0, (char*)buffer, 0);		
+			break;
+			
+		case 1:
+			sprintf((char*)buffer, "Pressure");
+			HD44780_WriteData(0, 0, (char*)buffer, 1);
+		
+			sprintf((char*)buffer, "%.2f inHg", inPressure );
+			HD44780_WriteData(1, 0, (char*)buffer, 0);
+			break;
+			
+		case 2:
+			sprintf((char*)buffer, "Humidity");
+			HD44780_WriteData(0, 0, (char*)buffer, 1);
+		
+			sprintf((char*)buffer, "%.2f %%", humidity);
+			HD44780_WriteData(1, 0, (char*)buffer, 0);
+			break;		
+			
+		case 3:
+			sprintf((char*)buffer, "Amb. Light");
+			HD44780_WriteData(0, 0, (char*)buffer, 1);
+		
+			sprintf((char*)buffer, "%.2f lux", lux);
+			HD44780_WriteData(1, 0, (char*)buffer, 0);
+			break;
+			
+		case 4:
+		
+			sprintf((char*)buffer, "UV index: %ld", uvi);
+			HD44780_WriteData(0, 0, (char*)buffer, 1);
+			break;
+	}
+	
+}
+
 
 int main()
 {
     uint8_t rslt, chipID;
-    int32_t period;
-	int32_t temperature;
-	uint32_t ambientLight, rawUV, uvi;
+//	int32_t temperature;
+//	uint32_t ambientLight, rawUV, uvi;
 	
 	
-	double pressure; 
-	double  humidity;
-	double inPressure;
-	double lux;
+//	double pressure; 
+//	double  humidity;
+//	double inPressure;
+//	double lux;
     
     cli();
     DDRB |= (1 << PB5);
+	
+	DDRD = 0xfc;
+	DDRC = 0x3f;
     
     // Set up I2C
     i2c_init();
@@ -515,7 +576,16 @@ int main()
     // 9600
     UBRR0H = 0x00; 
     UBRR0L = (uint8_t)103;
-
+	
+	// Init the display
+	HD44780_Init();
+	
+	_delay_ms(10);
+	sprintf((char*)buffer, "HELLO!");
+	HD44780_WriteData(0, 5, (char*)buffer, 1);
+	
+	_delay_ms(1000);
+	
 	// Get the compensation parameters fm the BME280
 	getCompParameters(0x88);
 	
@@ -525,6 +595,8 @@ int main()
     uartSend(buffer);
 		
     chipID = i2c_read_byte(UVADDR, 0x06);
+	
+	sprintf((char*)buffer, "LTR390Chip ID: %x\r\n\r\n", chipID);
         
     sprintf((char*)buffer, "LTR390Chip ID: %x\r\n\r\n", chipID);
     uartSend(buffer);
@@ -593,11 +665,10 @@ int main()
 	// get UV level
 	rawUV = getUVdata(0x10);
 	uvi = calcUVI(rawUV);
+	
+	timerCount = 0;
+	displayCount = 0;
 		
-	sprintf((char*)buffer, "RAW UV: %ld		UV index: %ld \r\n", rawUV, uvi);
-	uartSend(buffer);
-		
-
     while (1)
     {
 
@@ -613,6 +684,12 @@ int main()
 		temperature = compensateTemp(myData.temperature);
 		sprintf((char*)buffer, "Temperature: %.2f deg.C\r\n", (float)(temperature/100.00));
 		uartSend(buffer);
+		
+//		sprintf((char*)buffer, "Temperature:");
+//		HD44780_WriteData(0, 0, (char*)buffer, 1);
+		
+//		sprintf((char*)buffer, "%.2f deg.C", (float)(temperature/100.00));
+//		HD44780_WriteData(1, 0, (char*)buffer, 0);
 
 //		sprintf((char*)buffer, "RAW pressure: %ld\r\n", myData.pressure);
 //		uartSend(buffer);
@@ -653,6 +730,19 @@ int main()
 		
 		sprintf((char*)buffer, "UV index: %ld \r\n\r\n\r\n", uvi);
 		uartSend(buffer);
+		
+		timerCount++;
+		
+		if (timerCount >= 2) {
+			timerCount = 0;
+			updateLCD(displayCount);
+			
+			displayCount++;
+			
+			if (displayCount >= 5) {
+				displayCount = 0;
+			}
+		}
 		
 		// flash the amber LED(L)
         PORTB ^= (1 << PB5);
