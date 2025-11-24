@@ -1,6 +1,15 @@
-// Default clock source is internal 8MHz RC oscillator
-//#define F_CPU 16000000UL
+// Default clock source is internal 16MHz RC oscillator
+//#define F_CPU 16000000UL //This can also be defined under Project > <project>Properties > Compiler Symbols
 #define SCL_CLOCK 100000UL // I2C clock frequency (100kHz)
+
+#define AVERAGE_COUNT	15 //seconds
+
+#define FALLING_RAPIDLY	0
+#define FALLING			1
+#define STEADY			2
+#define RISING			3
+#define RISING_RAPIDLY	4
+#define UNKNOWN			5
 
 #define UVADDR    0x53
 #define BMPADDR   0x77 
@@ -20,12 +29,12 @@ static struct bme280_uncomp_data myData;
 static struct bme280_calib_data calData;
 
 uint8_t string1[] = "HELLO!";
-uint8_t displayCount, timerCount;
-
-int32_t temperature;
+uint8_t displayCount, timerCount, sampleCount, pressureTrend;
+uint16_t threeHourCount;
+int32_t temperature, aveTemp;
 uint32_t ambientLight, rawUV, uvi;	
-double pressure;
-double  humidity;
+double pressure, avePressure, pressureTrend1, pressureTrend2;
+double  humidity, aveHumidity;
 double inPressure;
 double lux;
 
@@ -46,12 +55,33 @@ uint8_t calcUVI(uint32_t rawUV);
 
 
 void uartSend(uint8_t []);
-
 void getTPHdata(uint8_t addr);
 uint32_t getUVdata(uint8_t addr);
-
 void getCompParameters(uint8_t addr);
+void updateData(void);
 
+ISR (TIMER1_COMPA_vect) {
+	
+	updateData();
+	
+	// flash the amber LED(L)
+	PORTB ^= (1 << PB5);
+	
+	timerCount++;
+	
+	threeHourCount++;
+		
+	if (timerCount >= 2) {
+		timerCount = 0;
+		updateLCD(displayCount);
+			
+		displayCount++;
+			
+		if (displayCount >= 5) {
+			displayCount = 0;
+		}
+	}
+}
 
 ISR(USART_RX_vect) {
 }
@@ -510,7 +540,8 @@ void updateLCD(uint8_t displayCount) {
 			sprintf((char*)buffer, "Temperature");
 			HD44780_WriteData(0, 0, (char*)buffer, 1);
 				
-			sprintf((char*)buffer, "%.2f deg.C", (float)(temperature/100.00));
+//			sprintf((char*)buffer, "%.2f deg.C", (float)(temperature/100.00));
+			sprintf((char*)buffer, "%.2f deg.C", (float)(aveTemp/100.00));
 			HD44780_WriteData(1, 0, (char*)buffer, 0);		
 			break;
 			
@@ -518,7 +549,33 @@ void updateLCD(uint8_t displayCount) {
 			sprintf((char*)buffer, "Pressure");
 			HD44780_WriteData(0, 0, (char*)buffer, 1);
 		
-			sprintf((char*)buffer, "%.2f inHg", inPressure );
+//			sprintf((char*)buffer, "%.2f inHg", inPressure);
+//			sprintf((char*)buffer, "%.2f inHg", avePressure);
+
+			if (pressureTrend == UNKNOWN) {
+				sprintf((char*)buffer, "%.2f inHg", avePressure);
+			}
+
+			if (pressureTrend == RISING_RAPIDLY) {
+				sprintf((char*)buffer, "%.2f inHg	RR", avePressure);	
+			}
+			
+			if (pressureTrend == RISING) {
+				sprintf((char*)buffer, "%.2f inHg	R", avePressure);
+			}
+			
+			if (pressureTrend == STEADY) {
+				sprintf((char*)buffer, "%.2f inHg	S", avePressure);
+			}
+			
+			if (pressureTrend == FALLING) {
+				sprintf((char*)buffer, "%.2f inHg	F", avePressure);
+			}
+			
+			if (pressureTrend == FALLING_RAPIDLY) {
+				sprintf((char*)buffer, "%.2f inHg	FR", avePressure);
+			}
+
 			HD44780_WriteData(1, 0, (char*)buffer, 0);
 			break;
 			
@@ -526,7 +583,8 @@ void updateLCD(uint8_t displayCount) {
 			sprintf((char*)buffer, "Humidity");
 			HD44780_WriteData(0, 0, (char*)buffer, 1);
 		
-			sprintf((char*)buffer, "%.2f %%", humidity);
+//			sprintf((char*)buffer, "%.2f %%", humidity);
+			sprintf((char*)buffer, "%.2f %%", aveHumidity);
 			HD44780_WriteData(1, 0, (char*)buffer, 0);
 			break;		
 			
@@ -542,24 +600,154 @@ void updateLCD(uint8_t displayCount) {
 		
 			sprintf((char*)buffer, "UV index: %ld", uvi);
 			HD44780_WriteData(0, 0, (char*)buffer, 1);
+			
+			if (uvi <= 2) {
+				sprintf((char*)buffer, "Risk: Low");
+				HD44780_WriteData(1, 0, (char*)buffer, 0);
+			}
+			
+			if ( (uvi > 2) && (uvi <= 5) ){
+				sprintf((char*)buffer, "Risk: Moderate");
+				HD44780_WriteData(1, 0, (char*)buffer, 0);
+			}
+			
+			if ( (uvi > 5) && (uvi <= 7) ){
+				sprintf((char*)buffer, "Risk: High");
+				HD44780_WriteData(1, 0, (char*)buffer, 0);
+			}
+			
+			if ( (uvi > 7) && (uvi <= 10) ){
+				sprintf((char*)buffer, "Risk: VERY High!");
+				HD44780_WriteData(1, 0, (char*)buffer, 0);
+			}
+			
+			if (uvi > 10) {
+				sprintf((char*)buffer, "Risk: EXTREME!!!");
+				HD44780_WriteData(1, 0, (char*)buffer, 0);
+			}
 			break;
 	}
 	
 }
 
+void updateData(void) {
+	
+
+	// Force a measurement from the BMP280
+	i2c_write_byte(BMPADDR, 0xf4, 0x91);
+	_delay_ms(10);
+
+	getTPHdata(0xf7);
+
+//	temperature = compensateTemp(myData.temperature);
+	temperature += compensateTemp(myData.temperature);
+	
+//	sprintf((char*)buffer, "Temperature: %.2f deg.C\r\n", (float)(temperature/100.00));
+	sprintf((char*)buffer, "Temperature: %.2f deg.C\r\n", (float)(aveTemp/100.00));
+	uartSend(buffer);
+
+	pressure = compensatePressure(myData.pressure);
+//	inPressure = ( (double)pressure) * 0.0002953;
+	inPressure += ( (double)pressure) * 0.0002953;
+
+//	sprintf((char*)buffer, "Pressure: %.2f inHg\r\n", inPressure );
+//	sprintf((char*)buffer, "Pressure: %.2f inHg\r\n", avePressure );
+//	uartSend(buffer);
+	
+	if (threeHourCount < 30) {
+		pressureTrend1 = avePressure;
+	}
+	
+	else if(threeHourCount >= 10800) {
+		pressureTrend2 = avePressure;
+		threeHourCount = 0;	
+	}
+	
+	if (pressureTrend1 && pressureTrend2) {
+		
+		if (pressureTrend2 == pressureTrend1) {
+			pressureTrend = STEADY;
+			sprintf((char*)buffer, "Pressure: %.2f inHg		Steady\r\n", avePressure );
+		}
+		
+		else if (pressureTrend2 > pressureTrend1) {
+			pressureTrend = RISING;
+			sprintf((char*)buffer, "Pressure: %.2f inHg		Rising\r\n", avePressure );
+		}
+		
+		//6 mb = 0.17718 inHg
+		else if (pressureTrend2 > (pressureTrend1 + (double)0.17718 ) ) {
+			pressureTrend = RISING_RAPIDLY;
+			sprintf((char*)buffer, "Pressure: %.2f inHg\r\n		Rising Rapidly", avePressure );
+		}
+		
+		else if (pressureTrend2 < pressureTrend1) {
+			pressureTrend = FALLING;
+			sprintf((char*)buffer, "Pressure: %.2f inHg		Falling\r\n", avePressure );
+		}
+		
+		else if (pressureTrend2 < (pressureTrend1 - (double)0.17718 ) ) {
+			pressureTrend = FALLING_RAPIDLY;
+			sprintf((char*)buffer, "Pressure: %.2f inHg		Falling Rapidly\r\n", avePressure );
+		}		
+	} else {
+		pressureTrend = UNKNOWN;
+		sprintf((char*)buffer, "Pressure: %.2f inHg\r\n", avePressure );
+	}
+	
+	uartSend(buffer);
+
+//	humidity = compensateHumidity(myData.humidity);
+	humidity += compensateHumidity(myData.humidity);
+	
+//	sprintf((char*)buffer, "Humidity: %.2f %%\r\n\r\n", humidity);
+	sprintf((char*)buffer, "Humidity: %.2f %%\r\n\r\n", aveHumidity);
+	uartSend(buffer);
+
+	i2c_write_byte(UVADDR, 0x00, 0x02); //MAIN_CTL reg: ALS mode
+	_delay_ms(10);
+
+	// Get Ambient light
+	i2c_write_byte(UVADDR, 0x00, 0x02); //MAIN_CTL reg: ALS mode
+	_delay_ms(100);
+
+	ambientLight = getUVdata(0x0d);
+	lux = ambient2Lux(ambientLight);
+
+	sprintf((char*)buffer, "Ambient Light: %.2f lux\r\n", lux);
+	uartSend(buffer);
+
+	//LTR390 config
+	i2c_write_byte(UVADDR, 0x00, 0x0a); //MAIN_CTL reg: UV mode
+	_delay_ms(100);
+
+	// get UV level
+	rawUV = getUVdata(0x10);
+	uvi = calcUVI(rawUV);
+
+	sprintf((char*)buffer, "UV index: %ld \r\n\r\n\r\n", uvi);
+	uartSend(buffer);	
+	
+	sampleCount++;
+	if (sampleCount >= AVERAGE_COUNT) {
+		sampleCount = 0;
+		
+		aveTemp = temperature / AVERAGE_COUNT;
+		avePressure = inPressure / AVERAGE_COUNT;
+		aveHumidity = humidity / AVERAGE_COUNT;
+		
+		temperature = 0;
+		inPressure = 0;
+		humidity = 0;
+		
+	}
+}
+
 
 int main()
 {
-    uint8_t rslt, chipID;
-//	int32_t temperature;
-//	uint32_t ambientLight, rawUV, uvi;
-	
-	
-//	double pressure; 
-//	double  humidity;
-//	double inPressure;
-//	double lux;
-    
+    uint8_t chipID;
+   
     cli();
     DDRB |= (1 << PB5);
 	
@@ -580,14 +768,35 @@ int main()
 	// Init the display
 	HD44780_Init();
 	
+	// Init Timer/Counter 0 to count seconds
+	TCCR1B = (1 << WGM12) | (1 << CS12) | (1 << CS10); //WGM Mode 4, clk/1024
+	OCR1A = 0x3d09; // with clk/1024, this should gine an interrupt every sencond
+	TIMSK1 = (1 << OCIE1A); //Enable compare match interrupt A
+	
 	_delay_ms(10);
 	sprintf((char*)buffer, "HELLO!");
 	HD44780_WriteData(0, 5, (char*)buffer, 1);
 	
 	_delay_ms(1000);
 	
-	// Get the compensation parameters fm the BME280
+	// Get the compensation parameters from the BME280
 	getCompParameters(0x88);
+	
+	sampleCount = 0;
+	
+	temperature = 0;
+	pressure = 0;
+	humidity = 0;
+	
+	aveTemp = 0;
+	avePressure = 0;
+	aveHumidity = 0;
+	
+	pressureTrend1 = 0;
+	pressureTrend2 = 0;
+	pressureTrend = UNKNOWN;
+	
+	threeHourCount = 0;
 	
     chipID = i2c_read_byte(BMPADDR, 0xd0);
         
@@ -624,129 +833,12 @@ int main()
 		
 	i2c_write_byte(UVADDR, 0x05, 0x01); //ALS_UVS_GAIN
 	_delay_ms(10);
-			
-	getTPHdata(0xf7);
-		
-	sprintf((char*)buffer, "RAW Temperature: %ld\r\n", myData.temperature);
-	uartSend(buffer);
-		
-	temperature = compensateTemp(myData.temperature);
-	sprintf((char*)buffer, "Temperature: %ld\r\n", temperature);
-	uartSend(buffer);
-	
-	sprintf((char*)buffer, "RAW pressure: %ld\r\n", myData.pressure);
-	uartSend(buffer);
-		
-	pressure = compensatePressure(myData.pressure);
-		
-	inPressure = ( (double)pressure) * 0.0002953;
-		
-	sprintf((char*)buffer, "Pressure: %.2f\r\n", inPressure );
-	uartSend(buffer);
-		
-	sprintf((char*)buffer, "RAW humidity: %ld\r\n", myData.humidity);
-	uartSend(buffer);
-		
-	humidity = compensateHumidity(myData.humidity);
-	sprintf((char*)buffer, "Humidity: %.2f\r\n\r\n\r\n", humidity);
-	uartSend(buffer);
-		
-	// Get Ambient light
-	ambientLight = getUVdata(0x0d);
-	lux = ambient2Lux(ambientLight);
-		
-	sprintf((char*)buffer, "RAW Ambient Light: %ld		%.2f lux\r\n", ambientLight, lux);
-	uartSend(buffer);
-		
-	//LTR390 config
-	i2c_write_byte(UVADDR, 0x00, 0x0a); //MAIN_CTL reg: UV mode
-	_delay_ms(10);
-			
-	// get UV level
-	rawUV = getUVdata(0x10);
-	uvi = calcUVI(rawUV);
-	
-	timerCount = 0;
-	displayCount = 0;
+
+	sei();
 		
     while (1)
     {
 
-		// Force a measurement from the BMP280
-		i2c_write_byte(BMPADDR, 0xf4, 0x91);
-		_delay_ms(10);
-		
-		getTPHdata(0xf7);
-
-//		sprintf((char*)buffer, "RAW Temperature: %ld\r\n", myData.temperature);
-//		uartSend(buffer);
-
-		temperature = compensateTemp(myData.temperature);
-		sprintf((char*)buffer, "Temperature: %.2f deg.C\r\n", (float)(temperature/100.00));
-		uartSend(buffer);
-		
-//		sprintf((char*)buffer, "Temperature:");
-//		HD44780_WriteData(0, 0, (char*)buffer, 1);
-		
-//		sprintf((char*)buffer, "%.2f deg.C", (float)(temperature/100.00));
-//		HD44780_WriteData(1, 0, (char*)buffer, 0);
-
-//		sprintf((char*)buffer, "RAW pressure: %ld\r\n", myData.pressure);
-//		uartSend(buffer);
-
-		pressure = compensatePressure(myData.pressure);
-		inPressure = ( (double)pressure) * 0.0002953;
-
-		sprintf((char*)buffer, "Pressure: %.2f inHg\r\n", inPressure );
-		uartSend(buffer);
-
-//		sprintf((char*)buffer, "RAW humidity: %ld\r\n", myData.humidity);
-//		uartSend(buffer);
-
-		humidity = compensateHumidity(myData.humidity);
-		sprintf((char*)buffer, "Humidity: %.2f %%\r\n\r\n", humidity);
-		uartSend(buffer);
-		
-		i2c_write_byte(UVADDR, 0x00, 0x02); //MAIN_CTL reg: ALS mode
-		_delay_ms(10);
-		
-		// Get Ambient light
-		i2c_write_byte(UVADDR, 0x00, 0x02); //MAIN_CTL reg: ALS mode
-		_delay_ms(100);	
-	
-		ambientLight = getUVdata(0x0d);
-		lux = ambient2Lux(ambientLight);
-
-		sprintf((char*)buffer, "Ambient Light: %.2f lux\r\n", lux);
-		uartSend(buffer);
-	
-		//LTR390 config
-		i2c_write_byte(UVADDR, 0x00, 0x0a); //MAIN_CTL reg: UV mode
-		_delay_ms(100);
-	
-		// get UV level
-		rawUV = getUVdata(0x10);
-		uvi = calcUVI(rawUV);
-		
-		sprintf((char*)buffer, "UV index: %ld \r\n\r\n\r\n", uvi);
-		uartSend(buffer);
-		
-		timerCount++;
-		
-		if (timerCount >= 2) {
-			timerCount = 0;
-			updateLCD(displayCount);
-			
-			displayCount++;
-			
-			if (displayCount >= 5) {
-				displayCount = 0;
-			}
-		}
-		
-		// flash the amber LED(L)
-        PORTB ^= (1 << PB5);
-        _delay_ms(1000);
     }
     return 0;
 }
